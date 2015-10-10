@@ -1,6 +1,6 @@
 # Written by DJ Edmonson
 # Warnings frequently signal eventual errors:
-CXXFLAGS=`sdl-config --cflags` -g -W -Wall  -O0 -I /usr/local/cuda/include
+CXXFLAGS=`sdl-config --cflags` -g -W -O0 -I /usr/local/cuda/include
 
 # Linker flags for both OS X and Linux
 LDFLAGS = `sdl-config --libs` -L /usr/local/cuda/lib64/ -lX11 -lSDL_ttf -lSDL_image -lexpat -lSDL_gfx -lm -lglut -lGL -lGLU -lGLEW -lXmu -lOpenCL

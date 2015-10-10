@@ -33,11 +33,18 @@ int getGridIndex(float4 p){
     return -1;
 }
 
-//int hashParticles(__global float4 p, __global int gridHash){
-
-
-
-//}
+__kernel void resetCounters(__global int* gridCounter){
+    int i = get_global_id(0);
+    gridCounter[i] = 0;
+}
+//hashes every particle based on their position in the spatial grid
+__kernel void hashParticles(__global float4* p, __global int* gridCells, __global int* gridCounter){
+    int i = get_global_id(0); 
+    int gIndex = getGridIndex(p[i]);
+    //if our particle falls outside of the grid, ignore it. Later we will accelerate it back into the grid
+    if(gIndex != -1){
+    }
+}
 
 float4 getforce(float4 pos, float4 vel)
 {
@@ -131,20 +138,21 @@ prev *= (MOD*MULT);
 return(fmod(prev,MOD)/MOD);
 }
 
-__kernel void VVerlet(__global float4* p, __global float4* v, __global float* r, __global int* activeP, __global float4* color)
+__kernel void VVerlet(__global float4* p, __global float4* v, __global float* r, __global int* activeP, __global float4* color, __global int* hashTable)
 {
 unsigned int i = get_global_id(0);
 float4 force, zoom;
 float radius, mylength;
 if(activeP[i]){
     for(int steps=0;steps<STEPS_PER_RENDER;steps++){
+        //update hash table
         force = getforce(p[i],v[i]);
         v[i] += force*DELTA_T/2.0f;
         p[i] += v[i]*DELTA_T;
         force = getforce(p[i],v[i]);
         v[i] += force*DELTA_T/2.0f;
-        //color[i] = getColor(v[i], color[i]); 
-        color[i] = getGridColor(getGridIndex(p[i]));
+        color[i] = getColor(v[i], color[i]); 
+        //color[i] = getGridColor(getGridIndex(p[i]));
         //printf("grid Index: %d\n", (int)getGridIndex(p[i]));
 
 
@@ -154,7 +162,7 @@ if(activeP[i]){
             r[i] = 1 - goober(r[i]);
             //activeP[i] = 0;
 
-            }
+        }
         else{
             //we check for sphere collisions
             float4 sphereCenters[4]; 

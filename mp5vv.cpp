@@ -17,6 +17,7 @@
 #include <CL/cl_gl_ext.h>
 #include <CL/cl_platform.h>
 #include <CL/opencl.h>
+#include <vector>
 #include "Camera.h"
 #include "gravity.h"
 #include "RGU.h"
@@ -49,9 +50,25 @@ return(((double)(random()+1))/2147483649.);
 
 cl_context mycontext;
 cl_command_queue mycommandqueue;
-cl_kernel vverletKernel, emitterKernel, resetEmitKernel;
 cl_program myprogram;
-cl_mem oclvbo, oclcbo, dev_velocity, dev_rseed, dev_activeParticles, dev_emitSum, dev_mass, dev_gridGravity, dev_hashTable;
+
+cl_kernel vverletKernel, 
+          emitterKernel, 
+          resetEmitKernel,
+          resetCountersKernel,
+          hashParticlesKernel;
+cl_mem oclvbo,
+       dev_color,
+       dev_velocity,
+       dev_rseed,
+       dev_activeP,
+       dev_emitSum,
+       dev_mass,
+       dev_gridGrav,
+       dev_hashTable,
+       dev_gridCounter;
+
+std::vector<cl_mem> dev_variables;
 size_t worksize[] = {NUMBER_OF_PARTICLES}; 
 size_t lws[] = {128}; 
 
@@ -60,11 +77,12 @@ float host_mass[NUMBER_OF_PARTICLES];
 float host_velocity[NUMBER_OF_PARTICLES][4];
 float host_color[NUMBER_OF_PARTICLES][4];
 float host_rseed[NUMBER_OF_PARTICLES];
-int host_gridHashTable[SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS][GRID_HASH_LEN];
+int host_hashTable[8*8*8][GRID_HASH_LEN] = {0};
 //x y z contain direction of force, w contains magnitude
-float host_gridGravity[SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS][4];
+float host_gridGrav[8*8*8][4];
+size_t resetCounters_globalWorkSize[] = {8*8*8};
 float host_emitSum[1];
-int host_activeParticles[NUMBER_OF_PARTICLES] = {0};
+int host_activeP[NUMBER_OF_PARTICLES] = {0};
 
 Camera *camera;
 
@@ -72,7 +90,7 @@ void initParticles(){
     for(int i = 0; i < NUMBER_OF_PARTICLES; i++){
             host_rseed[i] = genrand(); 
             host_mass[i] = host_rseed[i]*2;
-            if(!(i % 10000)) host_mass[i] += host_rseed[i]*100;
+            if(!(i % 1000)) host_mass[i] += host_rseed[i]*100;
             for(int j = 0; j < 4; j++)host_color[i][j] = 1.0;
     }
 }
@@ -84,6 +102,8 @@ double timeSinceStart = glutGet(GLUT_ELAPSED_TIME);
 double deltaTime = timeSinceStart - lastTime;
 timeCounter += deltaTime;
 lastTime = timeSinceStart;
+clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
+clWaitForEvents(1,waitlist);
 if(timeCounter > emissionSpacing){
     clEnqueueNDRangeKernel(mycommandqueue,resetEmitKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
     clWaitForEvents(1,waitlist);
@@ -110,7 +130,7 @@ glFinish();
 clEnqueueAcquireGLObjects(mycommandqueue,1,&oclvbo,0,0,0);
 do_kernel();
 clEnqueueReleaseGLObjects(mycommandqueue,1, &oclvbo, 0,0,0);
-clEnqueueReadBuffer(mycommandqueue,oclcbo, CL_FALSE, 0, sizeof(float)*4*NUMBER_OF_PARTICLES, host_color, 0, NULL, NULL);
+clEnqueueReadBuffer(mycommandqueue,dev_color, CL_FALSE, 0, sizeof(float)*4*NUMBER_OF_PARTICLES, host_color, 0, NULL, NULL);
 clFinish(mycommandqueue);
 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 camera->PerspectiveDisplay(WIDTH, HEIGHT);
@@ -237,12 +257,11 @@ char* oclsource;
 char* gravityHeader;
 size_t program_length;
 unsigned int gpudevcount;
-int gridSize = SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS;
-
+int gridSize = 8*8*8;
 
 err = RGUGetPlatformID(&myplatform);
-
 err = clGetDeviceIDs(myplatform,CL_DEVICE_TYPE_GPU,0,NULL,&gpudevcount);
+
 mydevice = new cl_device_id[gpudevcount];
 err = clGetDeviceIDs(myplatform,CL_DEVICE_TYPE_GPU,gpudevcount,mydevice,NULL);
 
@@ -258,58 +277,60 @@ mycommandqueue = clCreateCommandQueue(mycontext,mydevice[0],0,&err);
 
 gravityHeader= RGULoadProgSource("gravity.h", "", &program_length);
 oclsource = RGULoadProgSource("mp5vv.cl", gravityHeader, &program_length);
-myprogram = clCreateProgramWithSource(mycontext,1,(const char **)&oclsource,
-	&program_length, &err);
-if(err==CL_SUCCESS) fprintf(stderr,"create ok\n");
-else fprintf(stderr,"create err %d\n",err);
+myprogram = clCreateProgramWithSource(mycontext,1,(const char **)&oclsource,&program_length, &err);
+
+if(err==CL_SUCCESS) std::cout << "create ok\n";
+else std::cerr << "create err" << err << "\n";
+
 clBuildProgram(myprogram, 0, NULL, NULL, NULL, NULL);
-vverletKernel = clCreateKernel(myprogram, "VVerlet", &err);
-resetEmitKernel = clCreateKernel(myprogram, "resetEmitter", &err);
-emitterKernel = clCreateKernel(myprogram, "emitParticles", &err);
-if(err==CL_SUCCESS) fprintf(stderr,"build ok\n");
-else fprintf(stderr,"build err %d\n",err);
+vverletKernel =     clCreateKernel(myprogram, "VVerlet", &err);
+resetEmitKernel =   clCreateKernel(myprogram, "resetEmitter", &err);
+emitterKernel =     clCreateKernel(myprogram, "emitParticles", &err);
+resetCountersKernel=clCreateKernel(myprogram, "resetCounters", &err);
+hashParticlesKernel=clCreateKernel(myprogram, "hashParticles", &err);
+
+if(err==CL_SUCCESS) std::cout << "build ok\n";
+else std::cerr << "build err: " << err << "\n";
 
 glBindBuffer(GL_ARRAY_BUFFER, OGL_VBO);
 glBufferData(GL_ARRAY_BUFFER, DATA_SIZE, &host_position[0][0], GL_DYNAMIC_DRAW);
-oclvbo = clCreateFromGLBuffer(mycontext,CL_MEM_WRITE_ONLY,OGL_VBO,&err);
 
-oclcbo= clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	DATA_SIZE,&host_color[0][0],&err); 
+oclvbo =        clCreateFromGLBuffer(mycontext,CL_MEM_WRITE_ONLY,OGL_VBO,&err);
+dev_color =     clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,DATA_SIZE,&host_color[0][0],&err); 
+dev_velocity =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,DATA_SIZE,&host_velocity[0][0],&err); 
+dev_gridGrav =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(float)*gridSize*4,&host_gridGrav[0],&err); 
+dev_hashTable = clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(int)*gridSize*GRID_HASH_LEN,NULL,&err); 
+dev_gridCounter=clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(int)*gridSize,NULL,&err); 
+dev_mass =      clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(float)*NUMBER_OF_PARTICLES,&host_velocity[0][0],&err); 
+dev_rseed =     clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(float)*NUMBER_OF_PARTICLES,&host_rseed[0],&err); 
+dev_activeP =   clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(int)*NUMBER_OF_PARTICLES,&host_activeP[0],&err); 
+dev_emitSum =   clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(int),&host_emitSum,&err); 
 
-dev_velocity = clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	DATA_SIZE,&host_velocity[0][0],&err); 
-
-dev_gridGravity= clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	gridSize*sizeof(float)*4,&host_gridGravity[0],&err); 
-
-dev_hashTable = clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	gridSize*sizeof(int)*GRID_HASH_LEN,&host_gridHashTable[0][0],&err); 
-
-dev_mass = clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	sizeof(float)*NUMBER_OF_PARTICLES,&host_velocity[0][0],&err); 
-
-
-dev_rseed = clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	NUMBER_OF_PARTICLES*sizeof(float),&host_rseed[0],&err); 
-
-dev_activeParticles = clCreateBuffer(mycontext, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	NUMBER_OF_PARTICLES*sizeof(int),&host_activeParticles[0],&err); 
-dev_emitSum= clCreateBuffer(mycontext, CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,
-	sizeof(int),&host_emitSum,&err); 
-
+dev_variables.push_back(oclvbo);
+dev_variables.push_back(dev_color);
+dev_variables.push_back(dev_velocity);
+dev_variables.push_back(dev_gridGrav);
+dev_variables.push_back(dev_hashTable);
+dev_variables.push_back(dev_mass);
+dev_variables.push_back(dev_rseed);
+dev_variables.push_back(dev_activeP);
+dev_variables.push_back(dev_emitSum);
 
 clSetKernelArg(vverletKernel,0,sizeof(cl_mem),(void *)&oclvbo);
 clSetKernelArg(vverletKernel,1,sizeof(cl_mem),(void *)&dev_velocity);
 clSetKernelArg(vverletKernel,2,sizeof(cl_mem),(void *)&dev_rseed);
-clSetKernelArg(vverletKernel,3,sizeof(cl_mem),(void *)&dev_activeParticles);
-clSetKernelArg(vverletKernel,4,sizeof(cl_mem),(void *)&oclcbo);
+clSetKernelArg(vverletKernel,3,sizeof(cl_mem),(void *)&dev_activeP);
+clSetKernelArg(vverletKernel,4,sizeof(cl_mem),(void *)&dev_color);
+clSetKernelArg(vverletKernel,5,sizeof(cl_mem),(void *)&dev_hashTable);
 
 clSetKernelArg(emitterKernel,0,sizeof(cl_mem),(void *)&oclvbo);
 clSetKernelArg(emitterKernel,1,sizeof(cl_mem),(void *)&dev_velocity);
 clSetKernelArg(emitterKernel,2,sizeof(cl_mem),(void *)&dev_rseed);
-clSetKernelArg(emitterKernel,3,sizeof(cl_mem),(void *)&dev_activeParticles);
+clSetKernelArg(emitterKernel,3,sizeof(cl_mem),(void *)&dev_activeP);
 clSetKernelArg(emitterKernel,4,sizeof(cl_mem),(void *)&dev_emitSum);
-clSetKernelArg(emitterKernel,5,sizeof(cl_mem),(void *)&oclcbo);
+clSetKernelArg(emitterKernel,5,sizeof(cl_mem),(void *)&dev_color);
+
+clSetKernelArg(resetCountersKernel,0,sizeof(cl_mem),(void *)&dev_gridCounter);
 
 clSetKernelArg(resetEmitKernel,0,sizeof(cl_mem),(void *)&dev_emitSum);
 }
@@ -323,26 +344,25 @@ clReleaseProgram(myprogram);
 clReleaseCommandQueue(mycommandqueue);
 glBindBuffer(GL_ARRAY_BUFFER,OGL_VBO);
 glDeleteBuffers(1,&OGL_VBO);
-clReleaseMemObject(oclvbo);
-clReleaseMemObject(oclcbo);
-clReleaseMemObject(dev_velocity);
-clReleaseMemObject(dev_rseed);
-clReleaseMemObject(dev_activeParticles);
-clReleaseMemObject(dev_emitSum);
-clReleaseMemObject(dev_emitSum);
-clReleaseMemObject(dev_emitSum);
+
+cl_int err;
+for(unsigned int i = 0; i < dev_variables.size(); i++){
+    err = clReleaseMemObject(dev_variables[i]);
+    if(err == CL_INVALID_MEM_OBJECT)
+        std::cerr << "Could not release CL object " << i << "\n"; 
+    else
+        std::cout << "Successfully released CL object " << i << "\n";
+}
 clReleaseContext(mycontext);
 exit(0);
 }
 
 void mouseEventHandler(int button, int state, int x, int y) {
-  // let the camera handle some specific mouse events (similar to maya)
   camera->HandleMouseEvent(button, state, x, y);
   glutPostRedisplay();
 }
 
 void motionEventHandler(int x, int y) {
-  // let the camera handle some mouse motions if the camera is to be moved
   camera->HandleMouseMotion(x, y);
   glutPostRedisplay();
 }
@@ -375,4 +395,3 @@ glutDisplayFunc(mydisplayfunc);
 glutKeyboardFunc(getout);
 glutMainLoop();
 }
-
