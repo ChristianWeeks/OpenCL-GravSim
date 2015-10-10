@@ -43,6 +43,12 @@ __kernel void hashParticles(__global float4* p, __global int* gridCells, __globa
     int gIndex = getGridIndex(p[i]);
     //if our particle falls outside of the grid, ignore it. Later we will accelerate it back into the grid
     if(gIndex != -1){
+        //ignore particles after hash table is filled
+        if(gridCounter[gIndex] < GRID_HASH_LEN){
+            gridCells[gIndex*GRID_HASH_LEN + gridCounter[gIndex]] = i;
+            atomic_inc(&gridCounter[gIndex]);
+        }
+
     }
 }
 

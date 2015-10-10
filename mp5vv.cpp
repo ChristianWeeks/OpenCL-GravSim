@@ -102,8 +102,6 @@ double timeSinceStart = glutGet(GLUT_ELAPSED_TIME);
 double deltaTime = timeSinceStart - lastTime;
 timeCounter += deltaTime;
 lastTime = timeSinceStart;
-clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
-clWaitForEvents(1,waitlist);
 if(timeCounter > emissionSpacing){
     clEnqueueNDRangeKernel(mycommandqueue,resetEmitKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
     clWaitForEvents(1,waitlist);
@@ -119,8 +117,13 @@ if(timeCounter > emissionSpacing){
         timeCounter = 0;
     }
 }
-clEnqueueNDRangeKernel(mycommandqueue,vverletKernel,1,NULL,worksize,lws,0,0,
-	&waitlist[0]);
+//reset our gridCounter
+clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
+//hash our particles
+
+clWaitForEvents(1,waitlist);
+//run our simulation
+clEnqueueNDRangeKernel(mycommandqueue,vverletKernel,1,NULL,worksize,lws,0,0,&waitlist[0]);
 clWaitForEvents(1,waitlist);
 }
 
