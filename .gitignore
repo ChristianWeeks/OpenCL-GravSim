@@ -1,0 +1,8 @@
+#Compiled source
+*.d
+*.o
+
+
+#vim swp files
+*.swp
+*.swo
