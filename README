@@ -1,0 +1,27 @@
+Christian Weeks
+CPSC 678 Project 2 - particles
+Assignment README
+
+---------------------------------------------------------------------------------------------------------------------------------------------
+Compiling and running:
+---------------------------------------------------------------------------------------------------------------------------------------------
+Should be as simple as
+>oclc mp5vv
+>./mp5vv
+
+If you have any trouble, please let me know.
+---------------------------------------------------------------------------------------------------------------------------------------------
+Features:
+---------------------------------------------------------------------------------------------------------------------------------------------
+*(pseudo)random emission - at each emission step, a random point in the y=0 plane is chosen from which the particles are emitted in a vertical column
+*emission is controlled via atomic incrementing
+*When particles hit the ground, they are pooled and will then be emitted again at the next emission step 
+*4 collision spheres - I chose not to render them as I thought the particles themselves were way more interesting
+*Each sphere has unique color attributes, so particles that hit it will change to a different color
+*Vortex force from your original example is unchanged.  Collision is reworked to properly work with spheres
+*Increasing restitution and decreasing friction should make fewer particles stick to spheres
+
+The high emission rate should make sure ~ 1 million particles are almost always on screen.  If you would like to be certain, you can just ratchet up
+EMIT_RATE in mp5vv.cl
+
+For this assignment, I largely cannibalized the code from your velocity verlet example, so much of the code is the same. 
