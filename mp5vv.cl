@@ -33,24 +33,47 @@ int getGridIndex(float4 p){
     return -1;
 }
 
-__kernel void resetCounters(__global int* gridCounter){
+__kernel void resetCounters(__global int* gridCounter, __global long* gridCog, __global ulong* gridMass){
     int i = get_global_id(0);
     gridCounter[i] = 0;
+    gridMass[i] = 0;
+    gridCog[i*4] = 0;
+    gridCog[i*4+1] = 0;
+    gridCog[i*4+2] = 0;
 }
 //hashes every particle based on their position in the spatial grid
-__kernel void hashParticles(__global float4* p, __global int* gridCells, __global int* gridCounter){
+__kernel void hashParticles(__global float4* p, __global float* pMass, __global int* gridCells, __global int* gridCounter, __global long* gridCog, __global ulong* gridMass){
     int i = get_global_id(0); 
     int gIndex = getGridIndex(p[i]);
     //if our particle falls outside of the grid, ignore it. Later we will accelerate it back into the grid
     if(gIndex != -1){
         //ignore particles after hash table is filled
         if(gridCounter[gIndex] < GRID_HASH_LEN){
+            //add the particles index to our hash table
             gridCells[gIndex*GRID_HASH_LEN + gridCounter[gIndex]] = i;
+            //increment the counter
             atomic_inc(&gridCounter[gIndex]);
+            //Unfortunately, OpenCL atomics do not support floats.  So we'll have to approximate further by converting to ints 
+            long temp = (long)(1000000*(p[i].x*pMass[i]));
+            //add the mass and center of gravity
+            atomic_add(&gridCog[gIndex*4], temp);
+            temp = (long)(1000000*(p[i].y*pMass[i]));
+            atomic_add(&gridCog[gIndex*4+1], temp);
+            temp = (long)(1000000*(p[i].z*pMass[i]));
+            atomic_add(&gridCog[gIndex*4+2], temp);
+            temp = (long)(1000000*pMass[i]);
+            atomic_add(&gridMass[gIndex], temp);
         }
-
     }
 }
+__kernel void calcCog(__global long* gridCog, __global ulong* gridMass){
+    int i = get_global_id(0);
+    gridCog[i] /= gridMass[i];
+    gridCog[i+1] /= gridMass[i];
+    gridCog[i+2] /= gridMass[i];
+}
+
+
 
 float4 getforce(float4 pos, float4 vel)
 {

@@ -1,4 +1,3 @@
-
 // 
 // This particle sytem with collisions uses velocity Verlet integration.
 // mp5vv.cpp
@@ -61,16 +60,25 @@ cl_mem oclvbo,
        dev_color,
        dev_velocity,
        dev_rseed,
+       //bool list used to tell which particles are active
        dev_activeP,
+       //Sum used to keep track of particle emission
        dev_emitSum,
-       dev_mass,
-       dev_gridGrav,
+       //particle mass
+       dev_pMass,
+       //contains grid cell center of gravity 
+       dev_gridCog,
+       //contains grid cell mass
+       dev_gridMass,
+       //list of particle indices in each grid cell
        dev_hashTable,
+       //count of how many particles in each cell
        dev_gridCounter;
 
 std::vector<cl_mem> dev_variables;
 size_t worksize[] = {NUMBER_OF_PARTICLES}; 
 size_t lws[] = {128}; 
+size_t resetCounters_globalWorkSize[] = {8*8*8};
 
 float host_position[NUMBER_OF_PARTICLES][4];
 float host_mass[NUMBER_OF_PARTICLES];
@@ -79,8 +87,6 @@ float host_color[NUMBER_OF_PARTICLES][4];
 float host_rseed[NUMBER_OF_PARTICLES];
 int host_hashTable[8*8*8][GRID_HASH_LEN] = {0};
 //x y z contain direction of force, w contains magnitude
-float host_gridGrav[8*8*8][4];
-size_t resetCounters_globalWorkSize[] = {8*8*8};
 float host_emitSum[1];
 int host_activeP[NUMBER_OF_PARTICLES] = {0};
 
@@ -105,9 +111,9 @@ lastTime = timeSinceStart;
 if(timeCounter > emissionSpacing){
     clEnqueueNDRangeKernel(mycommandqueue,resetEmitKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
     clWaitForEvents(1,waitlist);
-    clSetKernelArg(emitterKernel, 6, sizeof(float), &emitPos[0]);
-    clSetKernelArg(emitterKernel, 7, sizeof(float), &emitPos[1]);
-    clSetKernelArg(emitterKernel, 8, sizeof(float), &emitPos[2]);
+    clSetKernelArg(emitterKernel,6, sizeof(float), &emitPos[0]);
+    clSetKernelArg(emitterKernel,7, sizeof(float), &emitPos[1]);
+    clSetKernelArg(emitterKernel,8, sizeof(float), &emitPos[2]);
     clEnqueueNDRangeKernel(mycommandqueue,emitterKernel,1,NULL,worksize,lws,0,0,&waitlist[0]);
     clWaitForEvents(1,waitlist);
     if(timeCounter > emissionSpacing + emissionLength){
@@ -118,9 +124,10 @@ if(timeCounter > emissionSpacing){
     }
 }
 //reset our gridCounter
-clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,lws,lws,0,0,&waitlist[0]);
+clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,resetCounters_globalWorkSize,lws,0,0,&waitlist[0]);
 //hash our particles
-
+clWaitForEvents(1,waitlist);
+clEnqueueNDRangeKernel(mycommandqueue,hashParticlesKernel,1,NULL,resetCounters_globalWorkSize,lws,0,0,&waitlist[0]);
 clWaitForEvents(1,waitlist);
 //run our simulation
 clEnqueueNDRangeKernel(mycommandqueue,vverletKernel,1,NULL,worksize,lws,0,0,&waitlist[0]);
@@ -301,23 +308,29 @@ glBufferData(GL_ARRAY_BUFFER, DATA_SIZE, &host_position[0][0], GL_DYNAMIC_DRAW);
 oclvbo =        clCreateFromGLBuffer(mycontext,CL_MEM_WRITE_ONLY,OGL_VBO,&err);
 dev_color =     clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,DATA_SIZE,&host_color[0][0],&err); 
 dev_velocity =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,DATA_SIZE,&host_velocity[0][0],&err); 
-dev_gridGrav =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(float)*gridSize*4,&host_gridGrav[0],&err); 
-dev_hashTable = clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(int)*gridSize*GRID_HASH_LEN,NULL,&err); 
-dev_gridCounter=clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(int)*gridSize,NULL,&err); 
-dev_mass =      clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(float)*NUMBER_OF_PARTICLES,&host_velocity[0][0],&err); 
-dev_rseed =     clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(float)*NUMBER_OF_PARTICLES,&host_rseed[0],&err); 
-dev_activeP =   clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(int)*NUMBER_OF_PARTICLES,&host_activeP[0],&err); 
-dev_emitSum =   clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(int),&host_emitSum,&err); 
+dev_pMass =     clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(cl_float)*NUMBER_OF_PARTICLES,&host_mass[0],&err); 
+dev_rseed =     clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(cl_float)*NUMBER_OF_PARTICLES,&host_rseed[0],&err); 
+dev_activeP =   clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(cl_int)*NUMBER_OF_PARTICLES,&host_activeP[0],&err); 
+dev_emitSum =   clCreateBuffer(mycontext,CL_MEM_READ_WRITE|CL_MEM_COPY_HOST_PTR,sizeof(cl_int),&host_emitSum,&err); 
+//Do not need to copy host variable
+dev_hashTable = clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_int)*gridSize*GRID_HASH_LEN,NULL,&err); 
+dev_gridCounter=clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_int)*gridSize,NULL,&err); 
+//We must use atomic operations to add up the center of gravity.  Unfortunately, openCL does not support atomic operations on floating
+//point arithmetic, so we must approximate using unsigned long ints instead.
+dev_gridCog  =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_long)*gridSize*4,NULL,&err); 
+dev_gridMass =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_ulong)*gridSize, NULL, &err); 
 
 dev_variables.push_back(oclvbo);
 dev_variables.push_back(dev_color);
 dev_variables.push_back(dev_velocity);
-dev_variables.push_back(dev_gridGrav);
-dev_variables.push_back(dev_hashTable);
-dev_variables.push_back(dev_mass);
+dev_variables.push_back(dev_pMass);
 dev_variables.push_back(dev_rseed);
 dev_variables.push_back(dev_activeP);
 dev_variables.push_back(dev_emitSum);
+
+dev_variables.push_back(dev_gridCog);
+dev_variables.push_back(dev_hashTable);
+dev_variables.push_back(dev_gridMass);
 
 clSetKernelArg(vverletKernel,0,sizeof(cl_mem),(void *)&oclvbo);
 clSetKernelArg(vverletKernel,1,sizeof(cl_mem),(void *)&dev_velocity);
@@ -334,6 +347,15 @@ clSetKernelArg(emitterKernel,4,sizeof(cl_mem),(void *)&dev_emitSum);
 clSetKernelArg(emitterKernel,5,sizeof(cl_mem),(void *)&dev_color);
 
 clSetKernelArg(resetCountersKernel,0,sizeof(cl_mem),(void *)&dev_gridCounter);
+clSetKernelArg(resetCountersKernel,1,sizeof(cl_mem),(void *)&dev_gridCog);
+clSetKernelArg(resetCountersKernel,2,sizeof(cl_mem),(void *)&dev_gridMass);
+
+clSetKernelArg(hashParticlesKernel,0,sizeof(cl_mem),(void *)&oclvbo);
+clSetKernelArg(hashParticlesKernel,1,sizeof(cl_mem),(void *)&dev_pMass);
+clSetKernelArg(hashParticlesKernel,2,sizeof(cl_mem),(void *)&dev_hashTable);
+clSetKernelArg(hashParticlesKernel,3,sizeof(cl_mem),(void *)&dev_gridCounter);
+clSetKernelArg(hashParticlesKernel,4,sizeof(cl_mem),(void *)&dev_gridCog);
+clSetKernelArg(hashParticlesKernel,5,sizeof(cl_mem),(void *)&dev_gridMass);
 
 clSetKernelArg(resetEmitKernel,0,sizeof(cl_mem),(void *)&dev_emitSum);
 }
