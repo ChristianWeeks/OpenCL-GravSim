@@ -31,15 +31,14 @@
 
 GLuint OGL_VBO = 1;
 GLuint OGL_CBO = 2;
-#define NUMBER_OF_PARTICLES 1024*1024 
+#define NUMBER_OF_PARTICLES 192*192 
 #define DATA_SIZE (NUMBER_OF_PARTICLES*4*sizeof(float)) 
 double lastTime = 0;
 int gridSize = (SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS*SPATIAL_GRID_SEGMENTS);
 //emit every 3 seconds
 double emissionSpacing = 1000.0;
 double timeCounter = emissionSpacing;
-double emissionTimer = 0.0;
-double emissionLength = 5000.0;
+double emissionLength = 10.0;
 float emitPos[3] = {0};
 
 double genrand()
@@ -55,7 +54,8 @@ cl_kernel vverletKernel,
           emitterKernel, 
           resetEmitKernel,
           resetCountersKernel,
-          hashParticlesKernel;
+          hashParticlesKernel,
+          calcCogKernel;
 cl_mem oclvbo,
        dev_color,
        dev_velocity,
@@ -76,9 +76,9 @@ cl_mem oclvbo,
        dev_gridCounter;
 
 std::vector<cl_mem> dev_variables;
-size_t worksize[] = {NUMBER_OF_PARTICLES}; 
-size_t lws[] = {128}; 
-size_t resetCounters_globalWorkSize[] = {8*8*8};
+size_t particles_worksize[] = {NUMBER_OF_PARTICLES}; 
+size_t lws[] = {64}; 
+size_t grid_worksize[] = {8*8*8};
 
 float host_position[NUMBER_OF_PARTICLES][4];
 float host_mass[NUMBER_OF_PARTICLES];
@@ -95,7 +95,7 @@ Camera *camera;
 void initParticles(){
     for(int i = 0; i < NUMBER_OF_PARTICLES; i++){
             host_rseed[i] = genrand(); 
-            host_mass[i] = host_rseed[i]*2;
+            host_mass[i] = host_rseed[i]*2+0.2;
             if(!(i % 1000)) host_mass[i] += host_rseed[i]*100;
             for(int j = 0; j < 4; j++)host_color[i][j] = 1.0;
     }
@@ -114,7 +114,7 @@ if(timeCounter > emissionSpacing){
     clSetKernelArg(emitterKernel,6, sizeof(float), &emitPos[0]);
     clSetKernelArg(emitterKernel,7, sizeof(float), &emitPos[1]);
     clSetKernelArg(emitterKernel,8, sizeof(float), &emitPos[2]);
-    clEnqueueNDRangeKernel(mycommandqueue,emitterKernel,1,NULL,worksize,lws,0,0,&waitlist[0]);
+    clEnqueueNDRangeKernel(mycommandqueue,emitterKernel,1,NULL,particles_worksize,lws,0,0,&waitlist[0]);
     clWaitForEvents(1,waitlist);
     if(timeCounter > emissionSpacing + emissionLength){
         emitPos[0] = 2.0*genrand() - 1.0;
@@ -124,13 +124,13 @@ if(timeCounter > emissionSpacing){
     }
 }
 //reset our gridCounter
-clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,resetCounters_globalWorkSize,lws,0,0,&waitlist[0]);
+clEnqueueNDRangeKernel(mycommandqueue,resetCountersKernel,1,NULL,grid_worksize,lws,0,0,&waitlist[0]);
 //hash our particles
 clWaitForEvents(1,waitlist);
-clEnqueueNDRangeKernel(mycommandqueue,hashParticlesKernel,1,NULL,resetCounters_globalWorkSize,lws,0,0,&waitlist[0]);
+clEnqueueNDRangeKernel(mycommandqueue,hashParticlesKernel,1,NULL,particles_worksize,lws,0,0,&waitlist[0]);
 clWaitForEvents(1,waitlist);
 //run our simulation
-clEnqueueNDRangeKernel(mycommandqueue,vverletKernel,1,NULL,worksize,lws,0,0,&waitlist[0]);
+clEnqueueNDRangeKernel(mycommandqueue,vverletKernel,1,NULL,particles_worksize,lws,0,0,&waitlist[0]);
 clWaitForEvents(1,waitlist);
 }
 
@@ -318,7 +318,7 @@ dev_gridCounter=clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_int)*gridSi
 //We must use atomic operations to add up the center of gravity.  Unfortunately, openCL does not support atomic operations on floating
 //point arithmetic, so we must approximate using unsigned long ints instead.
 dev_gridCog  =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_long)*gridSize*4,NULL,&err); 
-dev_gridMass =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_ulong)*gridSize, NULL, &err); 
+dev_gridMass =  clCreateBuffer(mycontext,CL_MEM_READ_WRITE,sizeof(cl_long)*gridSize, NULL, &err); 
 
 dev_variables.push_back(oclvbo);
 dev_variables.push_back(dev_color);
@@ -338,6 +338,8 @@ clSetKernelArg(vverletKernel,2,sizeof(cl_mem),(void *)&dev_rseed);
 clSetKernelArg(vverletKernel,3,sizeof(cl_mem),(void *)&dev_activeP);
 clSetKernelArg(vverletKernel,4,sizeof(cl_mem),(void *)&dev_color);
 clSetKernelArg(vverletKernel,5,sizeof(cl_mem),(void *)&dev_hashTable);
+clSetKernelArg(vverletKernel,6,sizeof(cl_mem),(void *)&dev_gridCog);
+clSetKernelArg(vverletKernel,7,sizeof(cl_mem),(void *)&dev_gridMass);
 
 clSetKernelArg(emitterKernel,0,sizeof(cl_mem),(void *)&oclvbo);
 clSetKernelArg(emitterKernel,1,sizeof(cl_mem),(void *)&dev_velocity);

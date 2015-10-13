@@ -8,11 +8,14 @@
 #define DELTA_T (0.002f)
 #define FRICTION 0.25f
 #define RESTITUTION 0.9f
-#define EMIT_RATE 20000
+#define EMIT_RATE 10
 
 #define EPS_DOWN (0.01f) // gravity
-#define V_DRAG (3.5f)
-
+#define V_DRAG (0.5f)
+#define GRAVITY 0.00004
+float vecMagn(float4 vec){
+    return (float)(sqrt(vec.x*vec.x + vec.y*vec.y + vec.z*vec.z));
+}
 
 int getGridIndex(float4 p){
     //int4 index;
@@ -33,7 +36,7 @@ int getGridIndex(float4 p){
     return -1;
 }
 
-__kernel void resetCounters(__global int* gridCounter, __global long* gridCog, __global ulong* gridMass){
+__kernel void resetCounters(__global int* gridCounter, __global long* gridCog, __global long* gridMass){
     int i = get_global_id(0);
     gridCounter[i] = 0;
     gridMass[i] = 0;
@@ -42,7 +45,7 @@ __kernel void resetCounters(__global int* gridCounter, __global long* gridCog, _
     gridCog[i*4+2] = 0;
 }
 //hashes every particle based on their position in the spatial grid
-__kernel void hashParticles(__global float4* p, __global float* pMass, __global int* gridCells, __global int* gridCounter, __global long* gridCog, __global ulong* gridMass){
+__kernel void hashParticles(__global float4* p, __global float* pMass, __global int* gridCells, __global int* gridCounter, __global long* gridCog, __global long* gridMass){
     int i = get_global_id(0); 
     int gIndex = getGridIndex(p[i]);
     //if our particle falls outside of the grid, ignore it. Later we will accelerate it back into the grid
@@ -66,15 +69,36 @@ __kernel void hashParticles(__global float4* p, __global float* pMass, __global 
         }
     }
 }
-__kernel void calcCog(__global long* gridCog, __global ulong* gridMass){
+/*__kernel void calcCog(__global long* gridCog, __global long* gridMass){
     int i = get_global_id(0);
-    gridCog[i] /= gridMass[i];
-    gridCog[i+1] /= gridMass[i];
-    gridCog[i+2] /= gridMass[i];
+    double temp1 = gridCog[i*4];
+    double temp3 = temp1 / (double)gridMass[i];
+    double temp4 = (double)(gridCog[i*4])/ (double)gridMass[i];
+    printf("[%.4f, %.4f, %ld, %.4f]\n", temp1, temp3, gridCog[i*4], temp4);
+}*/
+
+
+float4 getGravity(float4 pos, long cogX, long cogY, long cogZ, long gridMass){
+    float4 force;
+    //convert to floats from long
+    float tempX = (float)cogX / (float)gridMass;
+    float tempY = (float)cogY / (float)gridMass;
+    float tempZ = (float)cogZ / (float)gridMass;
+    float tempGMass = (float)gridMass;
+    tempGMass /= 1000000;
+    //calculate vector between points, distance vector
+    float4 direction;
+    direction.x = tempX - pos.x;
+    direction.y = tempY - pos.y;
+    direction.z = tempZ - pos.z;
+    float magn = vecMagn(direction);
+    float4 u = direction / magn;
+    float gravFinal = GRAVITY*tempGMass/(magn*magn);
+    force = u * gravFinal; 
+    force.w = 1.0;
+    return force;
+
 }
-
-
-
 float4 getforce(float4 pos, float4 vel)
 {
 float4 force;
@@ -87,9 +111,6 @@ force = force*(float)(0.6);
 return(force);
 }
 
-float vecMagn(float4 vec){
-    return (float)(sqrt(vec.x*vec.x + vec.y*vec.y + vec.z*vec.z));
-}
 
 float4 getGridColor(int index){
     float4 color;
@@ -149,7 +170,7 @@ float4 getColor(float4 v, float4 c){
     else
         newColor.y = 1.0 - magn;
     newColor.z = c.z;
-    newColor.w = 1 - (1-magn)*0.4;
+    newColor.w = 1;// - (1-magn)*0.4;
     return newColor;
 }
 
@@ -167,18 +188,35 @@ prev *= (MOD*MULT);
 return(fmod(prev,MOD)/MOD);
 }
 
-__kernel void VVerlet(__global float4* p, __global float4* v, __global float* r, __global int* activeP, __global float4* color, __global int* hashTable)
+__kernel void VVerlet(__global float4* p, __global float4* v, __global float* r, __global int* activeP, __global float4* color, __global int* hashTable, __global long* gridCog, __global long* gridMass)
 {
 unsigned int i = get_global_id(0);
 float4 force, zoom;
 float radius, mylength;
 if(activeP[i]){
     for(int steps=0;steps<STEPS_PER_RENDER;steps++){
-        //update hash table
-        force = getforce(p[i],v[i]);
+        force.x = 0;
+        force.y = 0;
+        force.z = 0;
+        force.w = 1;
+        int pIndex = getGridIndex(p[i]);
+        //if the particle is outside of the grid, accelerate it back into the grid
+        if(pIndex == -1) {
+            force = -p[i] / vecMagn(p[i]);
+        }
+        else{
+            for(int gridNdx = 0; gridNdx < 8*8*8; gridNdx++){
+                if(gridMass[gridNdx] > 1000 || gridMass[gridNdx] < -1000)
+                    force += getGravity(p[i], gridCog[gridNdx*4], gridCog[gridNdx*4+1], gridCog[gridNdx*4+2], gridMass[gridNdx]);
+            } 
+        }
+        force = force - V_DRAG*v[i];
+        if(vecMagn(force) > 20)
+            force = force*(float)2.0/force;
+        //force = getforce(p[i],v[i]);
         v[i] += force*DELTA_T/2.0f;
         p[i] += v[i]*DELTA_T;
-        force = getforce(p[i],v[i]);
+        //force = getforce(p[i],v[i]);
         v[i] += force*DELTA_T/2.0f;
         color[i] = getColor(v[i], color[i]); 
         //color[i] = getGridColor(getGridIndex(p[i]));
@@ -212,7 +250,7 @@ if(activeP[i]){
                 //printf("sphereCenter: %.2f, %.2f, %.2f, %.2f\n", sphereCenters[k].x, sphereCenters[k].y, sphereCenters[k].z, sphereCenters[k].w);
                 float4 distVec =  p[i] -  sphereCenters[k];
                 float dist = vecMagn(distVec);
-                if(dist < 0.4){
+                if(dist < 1.0){
                     float4 normalVec = distVec / dist;
 
                     // Bounce the point.  Usually it's 
@@ -220,14 +258,13 @@ if(activeP[i]){
                     //      - f*(vin - (vin o n)n)/||vin - (vin o n)n||
                     // but here (vin o n)n) = (v[i].x,0,0), and so
                     // vin - (vin o n)n = (0,v[i].y,v[i].z).
-                    float4 vn = dot(v[i],normalVec)*normalVec;
+                /*    float4 vn = dot(v[i],normalVec)*normalVec;
                     float4 vp = v[i] - vn;
                     v[i] = (1-FRICTION)*vp - RESTITUTION*vn;
                     //v[i].x = v[i].x - ((1.0 + RESTITUTION)*v[i].x);
                     //shift it outside of the sphere
                     float delta = 0.4 - dist;
-                    p[i] += normalVec * (delta);
-
+                    p[i] += normalVec * (delta);*/
                     if(k == 1){
                         color[i].z += 1.0;
                         color[i].x -= 0.6;
@@ -269,14 +306,14 @@ __kernel void emitParticles(__global float4* p, __global float4* v, __global flo
         r[i] = goober(r[i]);
         activeP[i] = 1;
 
-        float vel = 10.0;
-        p[i].x = 0.3f*r[i] - 0.15;
+        float vel = 2.0;
+        p[i].x = 0.3f*r[i]  + emitX;
         r[i] = goober(r[i]);
         color[i].x = 1.0;
-        p[i].y = 0.3f*r[i] - 0.15;
+        p[i].y = 0.3f*r[i] + emitY;
         r[i] = goober(r[i]);
         color[i].z = 0.2 + 0.3*r[i];
-        p[i].z = 0.3f*r[i] - 0.15;
+        p[i].z = 0.3f*r[i] + emitZ;
         p[i].w = 1.0;
         r[i] = goober(r[i]);
         color[i].y = 0.2 + 0.3*r[i];
